@@ -132,20 +132,24 @@ def preflight(missing_packages: list[str]):
         "online_mode": ONLINE_MODE,
         "crs_target": CRS_TARGET,
     }
-    print("==== Preflight Report ====")
-    print(json.dumps(env_info, indent=2))
     existing = [
         str(p)
         for p in [APT_GPKG, POI_CSV, POI_GPKG, GRAPH_GRAPHML, NODES_GPKG, EDGES_GPKG]
         if p.exists()
     ]
+    print("==== Preflight Report ====")
+    print(json.dumps(env_info, indent=2))
     print("Detected files:", existing)
     print("==========================")
+    preflight_payload = {"env": env_info, "detected_files": existing}
+    with (OUT_DIR / "preflight_report.json").open("w") as f:
+        json.dump(preflight_payload, f, indent=2)
+    return preflight_payload
 
 
 availability = availability_report()
 missing_packages = [k for k, v in availability.items() if not v]
-preflight(missing_packages)
+preflight_report = preflight(missing_packages)
 
 # ==== Cell: Dependency hints ====
 
@@ -760,7 +764,7 @@ def run_full_pipeline():
 
 # ==== Cell: Minimal smoke pipeline (no external deps) ====
 
-def run_minimal_smoke():
+def run_minimal_smoke(reason: str = "auto"):
     print("Running minimal SMOKE_TEST pipeline (no external GIS/ML packages available or data missing)...")
     apartments, pois, nodes, edges, satisfaction = generate_synthetic_data()
     iso = compute_isochrones(apartments, nodes, edges, ISO_BREAKS_MINUTES)
@@ -779,6 +783,7 @@ def run_minimal_smoke():
         "access_rows": len(access),
         "rwds_rows": len(rwds),
         "mode": "minimal_smoke",
+        "reason": reason,
         "missing_packages": missing_packages,
     }
     with (OUT_DIR / "run_summary.json").open("w") as f:
@@ -790,7 +795,19 @@ def run_minimal_smoke():
 
 # ==== Cell: Entry point ====
 if __name__ == "__main__":
-    if SMOKE_TEST or missing_packages:
-        run_minimal_smoke()
-    else:
-        run_full_pipeline()
+    try:
+        if SMOKE_TEST or missing_packages:
+            reason = "smoke_flag" if SMOKE_TEST else "missing_packages"
+            run_minimal_smoke(reason=reason)
+        else:
+            run_full_pipeline()
+    except Exception as exc:  # pragma: no cover
+        import traceback
+
+        print("Pipeline failed with an exception:")
+        traceback.print_exc()
+        tb = traceback.TracebackException.from_exception(exc)
+        if tb.stack:
+            last = tb.stack[-1]
+            print(f"Failing at {last.filename}:{last.lineno} in {last.name}")
+        raise
