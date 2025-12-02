@@ -798,6 +798,20 @@ def run_full_pipeline():
         "edges": len(edges_gdf),
         "isochrones": len(iso_gdf),
         "outputs_gpkg": str(outputs_gpkg),
+        "outputs_written": [
+            str(outputs_gpkg),
+            str(OUT_DIR / "apt_metrics_long.csv"),
+            str(OUT_DIR / "apt_metrics.csv"),
+            str(OUT_DIR / "apt_metrics_wide.csv"),
+            str(OUT_DIR / "apt_metrics.parquet"),
+            str(OUT_DIR / "access_2sfca.csv"),
+            str(OUT_DIR / "rwds.csv"),
+            str(OUT_DIR / "cluster_results.csv"),
+            str(OUT_DIR / "figures" / "rwds1_hist.png"),
+            str(OUT_DIR / "figures" / "poi_counts.png"),
+            str(OUT_DIR / "figures" / "silhouette.png"),
+            str(OUT_DIR / "model_results.json") if SATISFACTION_CSV.exists() else None,
+        ],
     }
     with (OUT_DIR / "run_summary.json").open("w") as f:
         json.dump(summary, f, indent=2)
@@ -815,9 +829,15 @@ def run_minimal_smoke(reason: str = "auto"):
     access = compute_2sfca(apartments, pois)
     rwds = compute_rwds(metrics, access)
 
-    save_csv(OUT_DIR / "apt_metrics.csv", metrics)
-    save_csv(OUT_DIR / "access_2sfca.csv", access)
-    save_csv(OUT_DIR / "rwds.csv", rwds)
+    metrics_path = OUT_DIR / "apt_metrics.csv"
+    access_path = OUT_DIR / "access_2sfca.csv"
+    rwds_path = OUT_DIR / "rwds.csv"
+
+    save_csv(metrics_path, metrics)
+    save_csv(access_path, access)
+    save_csv(rwds_path, rwds)
+
+    outputs_written = [str(metrics_path), str(access_path), str(rwds_path), str(OUT_DIR / "preflight_report.json")]
 
     summary = {
         "apartments": len(apartments),
@@ -829,6 +849,7 @@ def run_minimal_smoke(reason: str = "auto"):
         "mode": "minimal_smoke",
         "reason": reason,
         "missing_packages": missing_packages,
+        "outputs_written": outputs_written,
     }
     with (OUT_DIR / "run_summary.json").open("w") as f:
         json.dump(summary, f, indent=2)
