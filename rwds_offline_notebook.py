@@ -102,15 +102,24 @@ OSM_CATEGORY_TAGS = {
 
 # ==== Cell: Run mode detection ====
 
+def data_available() -> bool:
+    """Return True if any primary data files exist."""
+    return any([APT_GPKG.exists(), POI_CSV.exists(), POI_GPKG.exists(), GRAPH_GRAPHML.exists()])
+
+
 def detect_run_modes():
-    files_present = any([APT_GPKG.exists(), POI_CSV.exists(), POI_GPKG.exists(), GRAPH_GRAPHML.exists()])
-    smoke = not files_present
-    offline = True
-    online = False
-    if os.environ.get("ONLINE_MODE", "0") == "1":
-        online = True
-        offline = False
-    if os.environ.get("OFFLINE_MODE", "1") == "0":
+    env_smoke = os.environ.get("SMOKE_TEST")
+    env_offline = os.environ.get("OFFLINE_MODE")
+    env_online = os.environ.get("ONLINE_MODE")
+
+    files_present = data_available()
+    smoke_default = not files_present
+    smoke = smoke_default if env_smoke is None else env_smoke == "1"
+
+    offline = True if env_offline is None else env_offline != "0"
+    online = False if env_online is None else env_online == "1"
+
+    if online:
         offline = False
     return smoke, offline, online
 
@@ -243,6 +252,30 @@ def generate_synthetic_data(num_apts: int = 6, num_pois: int = 18):
         satisfaction.append({"apt_id": apt["apt_id"], "satisfaction_score": round(random.uniform(3, 5), 2)})
 
     return apartments, pois, nodes, edges, satisfaction
+
+
+def validate_apartments(df_like, require_geometry: bool = False):
+    if "apt_id" not in df_like.columns:
+        raise ValueError("Apartments must include an apt_id column")
+    if df_like["apt_id"].duplicated().any():
+        raise ValueError("apt_id values must be unique")
+    if require_geometry and not hasattr(df_like, "geometry"):
+        raise ValueError("Apartment data must include geometry in full mode")
+
+
+def validate_pois(df_like, require_geometry: bool = False):
+    if "category" not in df_like.columns:
+        raise ValueError("POI data must include category column")
+    if not set(df_like["category"]).issubset(set(CATEGORY_TAXONOMY)):
+        missing = set(df_like["category"]) - set(CATEGORY_TAXONOMY)
+        raise ValueError(f"POI categories outside taxonomy: {missing}")
+    if require_geometry and not hasattr(df_like, "geometry"):
+        raise ValueError("POI data must include geometry in full mode")
+
+
+def validate_satisfaction(df_like):
+    if "satisfaction_score" not in df_like.columns:
+        raise ValueError("Satisfaction file must include satisfaction_score")
 
 
 def nearest_node(nodes: Dict[str, Tuple[float, float]], x: float, y: float):
@@ -691,6 +724,11 @@ def save_figures(plt, metrics_df, features_df, silhouette_info):
 # ==== Cell: Full pipeline orchestration ====
 
 def run_full_pipeline():
+    if missing_packages:
+        raise RuntimeError(
+            "Full pipeline requires missing packages. Install them or run with SMOKE_TEST=1."
+        )
+
     import numpy as np
     import pandas as pd
     import geopandas as gpd
@@ -699,10 +737,12 @@ def run_full_pipeline():
 
     print("Running full RWDS pipeline...")
     apt_gdf = load_apartments(gpd, pd)
+    validate_apartments(apt_gdf, require_geometry=True)
     apt_gdf = enrich_apartments_geometry(gpd, apt_gdf)
     apt_points = apt_gdf.copy()
     apt_points["households"] = apt_points.get("households", 1).fillna(1)
     poi_gdf = load_pois(gpd, pd)
+    validate_pois(poi_gdf, require_geometry=True)
 
     G = load_network(gpd, nx)
     nodes_gdf, edges_gdf = graph_to_edges_nodes(gpd, pd, nx, G)
@@ -725,6 +765,7 @@ def run_full_pipeline():
 
     if SATISFACTION_CSV.exists():
         sat_df = pd.read_csv(SATISFACTION_CSV)
+        validate_satisfaction(sat_df)
         if "apt_id" not in sat_df.columns:
             sat_df.rename(columns={sat_df.columns[0]: "apt_id"}, inplace=True)
         model_results = satisfaction_modeling(pd, np, None, features_df, sat_df)
@@ -742,6 +783,8 @@ def run_full_pipeline():
 
     metrics_df.to_csv(OUT_DIR / "apt_metrics_long.csv", index=False)
     metrics_df[metrics_df["minutes"] == RWDS_BREAK].to_csv(OUT_DIR / "apt_metrics.csv", index=False)
+    metrics_wide = metrics_df.pivot(index="apt_id", columns="minutes")
+    metrics_wide.to_csv(OUT_DIR / "apt_metrics_wide.csv")
     metrics_df.to_parquet(OUT_DIR / "apt_metrics.parquet", index=False)
     access_df.to_csv(OUT_DIR / "access_2sfca.csv", index=False)
     pd.DataFrame(rwds_rows).to_csv(OUT_DIR / "rwds.csv", index=False)
@@ -779,6 +822,7 @@ def run_minimal_smoke(reason: str = "auto"):
     summary = {
         "apartments": len(apartments),
         "pois": len(pois),
+        "pois_by_category": {c: sum(1 for p in pois if p["category"] == c) for c in CATEGORY_TAXONOMY},
         "metrics_rows": len(metrics),
         "access_rows": len(access),
         "rwds_rows": len(rwds),
@@ -796,9 +840,10 @@ def run_minimal_smoke(reason: str = "auto"):
 # ==== Cell: Entry point ====
 if __name__ == "__main__":
     try:
-        if SMOKE_TEST or missing_packages:
-            reason = "smoke_flag" if SMOKE_TEST else "missing_packages"
-            run_minimal_smoke(reason=reason)
+        if SMOKE_TEST:
+            run_minimal_smoke(reason="smoke_flag")
+        elif missing_packages:
+            raise RuntimeError("Required packages missing; install them or set SMOKE_TEST=1.")
         else:
             run_full_pipeline()
     except Exception as exc:  # pragma: no cover
